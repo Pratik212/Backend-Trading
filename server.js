@@ -425,7 +425,7 @@ app.delete('/api/payments/:id', authMiddleware, async (req, res) => {
 });
 
 // ----- Reports: part-wise & totals -----
-// Last month: part-wise payment (group by party, payment_date in last month)
+// Last month: part-wise payment (payment_date is TEXT, use YYYY-MM-DD strings)
 app.get('/api/reports/last-month-payments', authMiddleware, async (req, res) => {
   try {
     const { rows } = await pool.query(`
@@ -433,8 +433,8 @@ app.get('/api/reports/last-month-payments', authMiddleware, async (req, res) => 
              COALESCE(SUM(py.amount), 0) AS total_payment
       FROM parties p
       LEFT JOIN payments py ON py.party_id = p.id
-        AND py.payment_date >= TO_CHAR(DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month'), 'YYYY-MM-DD')
-        AND py.payment_date < TO_CHAR(DATE_TRUNC('month', CURRENT_DATE), 'YYYY-MM-DD')
+        AND py.payment_date >= TO_CHAR((DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1 month')::date, 'YYYY-MM-DD')
+        AND py.payment_date < TO_CHAR(DATE_TRUNC('month', CURRENT_DATE)::date, 'YYYY-MM-DD')
       GROUP BY p.id, p.name
       HAVING COALESCE(SUM(py.amount), 0) > 0
       ORDER BY total_payment DESC
@@ -446,7 +446,7 @@ app.get('/api/reports/last-month-payments', authMiddleware, async (req, res) => 
   }
 });
 
-// Current month: part-wise payment
+// Current month: part-wise payment (payment_date is TEXT, compare as YYYY-MM-DD)
 app.get('/api/reports/current-month-payments', authMiddleware, async (req, res) => {
   try {
     const { rows } = await pool.query(`
@@ -454,8 +454,8 @@ app.get('/api/reports/current-month-payments', authMiddleware, async (req, res) 
              COALESCE(SUM(py.amount), 0) AS total_payment
       FROM parties p
       LEFT JOIN payments py ON py.party_id = p.id
-        AND py.payment_date >= TO_CHAR(DATE_TRUNC('month', CURRENT_DATE), 'YYYY-MM-DD')
-        AND py.payment_date <= CURRENT_DATE
+        AND py.payment_date >= TO_CHAR(DATE_TRUNC('month', CURRENT_DATE)::date, 'YYYY-MM-DD')
+        AND py.payment_date <= TO_CHAR(CURRENT_DATE, 'YYYY-MM-DD')
       GROUP BY p.id, p.name
       HAVING COALESCE(SUM(py.amount), 0) > 0
       ORDER BY total_payment DESC
@@ -502,10 +502,10 @@ app.get('/api/reports/total-incoming', authMiddleware, async (req, res) => {
     const month = req.query.month || 'all';
     let whereClause = '';
     if (month === 'current') {
-      whereClause = `WHERE payment_date >= TO_CHAR(DATE_TRUNC('month', CURRENT_DATE), 'YYYY-MM-DD') AND payment_date <= CURRENT_DATE`;
+      whereClause = `WHERE payment_date >= TO_CHAR(DATE_TRUNC('month', CURRENT_DATE)::date, 'YYYY-MM-DD') AND payment_date <= TO_CHAR(CURRENT_DATE, 'YYYY-MM-DD')`;
     } else if (month === 'last') {
-      whereClause = `WHERE payment_date >= TO_CHAR(DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month'), 'YYYY-MM-DD')
-        AND payment_date < TO_CHAR(DATE_TRUNC('month', CURRENT_DATE), 'YYYY-MM-DD')`;
+      whereClause = `WHERE payment_date >= TO_CHAR((DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1 month')::date, 'YYYY-MM-DD')
+        AND payment_date < TO_CHAR(DATE_TRUNC('month', CURRENT_DATE)::date, 'YYYY-MM-DD')`;
     }
     const { rows } = await pool.query(`
       SELECT COALESCE(SUM(amount), 0) AS total_incoming FROM payments ${whereClause}
