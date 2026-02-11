@@ -369,6 +369,154 @@ app.delete('/api/office-expenses/:id', authMiddleware, async (req, res) => {
   }
 });
 
+// ----- Payments -----
+app.get('/api/payments', authMiddleware, async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT py.*, p.name AS party_name
+      FROM payments py
+      LEFT JOIN parties p ON p.id = py.party_id
+      ORDER BY py.payment_date DESC, py.created_at DESC
+    `);
+    res.json(rows);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+app.post('/api/payments', authMiddleware, async (req, res) => {
+  try {
+    const { party_id, amount, payment_date, notes } = req.body;
+    if (!party_id || amount == null) return res.status(400).json({ error: 'party_id and amount required' });
+    const { rows } = await pool.query(
+      'INSERT INTO payments (party_id, amount, payment_date, notes) VALUES ($1, $2, $3, $4) RETURNING id',
+      [party_id, amount, payment_date || null, notes || null]
+    );
+    res.status(201).json({ id: rows[0].id });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+app.put('/api/payments/:id', authMiddleware, async (req, res) => {
+  try {
+    const { party_id, amount, payment_date, notes } = req.body;
+    await pool.query(
+      'UPDATE payments SET party_id=$1, amount=$2, payment_date=$3, notes=$4 WHERE id=$5',
+      [party_id, amount, payment_date, notes, req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+app.delete('/api/payments/:id', authMiddleware, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM payments WHERE id = $1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// ----- Reports: part-wise & totals -----
+// Last month: part-wise payment (group by party, payment_date in last month)
+app.get('/api/reports/last-month-payments', authMiddleware, async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT p.id AS party_id, p.name AS party_name,
+             COALESCE(SUM(py.amount), 0) AS total_payment
+      FROM parties p
+      LEFT JOIN payments py ON py.party_id = p.id
+        AND py.payment_date >= TO_CHAR(DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month'), 'YYYY-MM-DD')
+        AND py.payment_date < TO_CHAR(DATE_TRUNC('month', CURRENT_DATE), 'YYYY-MM-DD')
+      GROUP BY p.id, p.name
+      HAVING COALESCE(SUM(py.amount), 0) > 0
+      ORDER BY total_payment DESC
+    `);
+    res.json(rows);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Current month: part-wise payment
+app.get('/api/reports/current-month-payments', authMiddleware, async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT p.id AS party_id, p.name AS party_name,
+             COALESCE(SUM(py.amount), 0) AS total_payment
+      FROM parties p
+      LEFT JOIN payments py ON py.party_id = p.id
+        AND py.payment_date >= TO_CHAR(DATE_TRUNC('month', CURRENT_DATE), 'YYYY-MM-DD')
+        AND py.payment_date <= CURRENT_DATE
+      GROUP BY p.id, p.name
+      HAVING COALESCE(SUM(py.amount), 0) > 0
+      ORDER BY total_payment DESC
+    `);
+    res.json(rows);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Total outstanding per party (challan total - payment total)
+app.get('/api/reports/outstanding', authMiddleware, async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      WITH challan_totals AS (
+        SELECT party_id, COALESCE(SUM(amount), 0) AS total_challan
+        FROM challans GROUP BY party_id
+      ),
+      payment_totals AS (
+        SELECT party_id, COALESCE(SUM(amount), 0) AS total_paid
+        FROM payments GROUP BY party_id
+      )
+      SELECT p.id AS party_id, p.name AS party_name,
+             COALESCE(ct.total_challan, 0) AS total_challan,
+             COALESCE(pt.total_paid, 0) AS total_paid,
+             GREATEST(COALESCE(ct.total_challan, 0) - COALESCE(pt.total_paid, 0), 0) AS outstanding
+      FROM parties p
+      LEFT JOIN challan_totals ct ON ct.party_id = p.id
+      LEFT JOIN payment_totals pt ON pt.party_id = p.id
+      WHERE COALESCE(ct.total_challan, 0) > 0
+      ORDER BY outstanding DESC
+    `);
+    res.json(rows);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Total incoming (sum of all payments; optional query: month=current|last|all)
+app.get('/api/reports/total-incoming', authMiddleware, async (req, res) => {
+  try {
+    const month = req.query.month || 'all';
+    let whereClause = '';
+    if (month === 'current') {
+      whereClause = `WHERE payment_date >= TO_CHAR(DATE_TRUNC('month', CURRENT_DATE), 'YYYY-MM-DD') AND payment_date <= CURRENT_DATE`;
+    } else if (month === 'last') {
+      whereClause = `WHERE payment_date >= TO_CHAR(DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month'), 'YYYY-MM-DD')
+        AND payment_date < TO_CHAR(DATE_TRUNC('month', CURRENT_DATE), 'YYYY-MM-DD')`;
+    }
+    const { rows } = await pool.query(`
+      SELECT COALESCE(SUM(amount), 0) AS total_incoming FROM payments ${whereClause}
+    `);
+    res.json({ total_incoming: Number(rows[0].total_incoming) });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 // Health check (works without DB for load balancers)
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 

@@ -58,5 +58,16 @@ CREATE TABLE IF NOT EXISTS office_expenses (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS payments (
+  id SERIAL PRIMARY KEY,
+  party_id INTEGER NOT NULL REFERENCES parties(id),
+  amount REAL NOT NULL,
+  payment_date TEXT NOT NULL,
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_challans_party ON challans(party_id);
 CREATE INDEX IF NOT EXISTS idx_challans_number ON challans(challan_number);
+CREATE INDEX IF NOT EXISTS idx_payments_party ON payments(party_id);
+CREATE INDEX IF NOT EXISTS idx_payments_date ON payments(payment_date);
