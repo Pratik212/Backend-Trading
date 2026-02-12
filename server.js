@@ -145,31 +145,58 @@ app.get('/api/challans', authMiddleware, async (req, res) => {
 });
 
 app.post('/api/challans', authMiddleware, async (req, res) => {
+  const client = await pool.connect();
   try {
-    const { challan_number, party_id, date, amount, description } = req.body;
+    const { challan_number, party_id, date, description, items } = req.body;
     if (!challan_number || !party_id) return res.status(400).json({ error: 'challan_number and party_id required' });
-    const { rows } = await pool.query(
+    const itemList = Array.isArray(items) && items.length > 0 ? items : [{ description: description || '', qty: 1, rate: 0 }];
+    let amount = 0;
+    for (const it of itemList) amount += (Number(it.qty) || 0) * (Number(it.rate) || 0);
+    const { rows } = await client.query(
       'INSERT INTO challans (challan_number, party_id, date, amount, description) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-      [challan_number, party_id, date || null, amount || 0, description || null]
+      [challan_number, party_id, date || null, amount, description || null]
     );
-    res.status(201).json({ id: rows[0].id, challan_number, party_id, date, amount, description });
+    const challanId = rows[0].id;
+    for (const it of itemList) {
+      await client.query(
+        'INSERT INTO challan_items (challan_id, description, qty, rate) VALUES ($1, $2, $3, $4)',
+        [challanId, it.description || null, Number(it.qty) || 1, Number(it.rate) || 0]
+      );
+    }
+    res.status(201).json({ id: challanId, challan_number, party_id, date, amount, description });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Database error' });
+  } finally {
+    client.release();
   }
 });
 
 app.put('/api/challans/:id', authMiddleware, async (req, res) => {
+  const client = await pool.connect();
   try {
-    const { challan_number, party_id, date, amount, description } = req.body;
-    await pool.query(
+    const { challan_number, party_id, date, description, items } = req.body;
+    const id = req.params.id;
+    const itemList = Array.isArray(items) && items.length > 0 ? items : [{ description: description || '', qty: 1, rate: 0 }];
+    let amount = 0;
+    for (const it of itemList) amount += (Number(it.qty) || 0) * (Number(it.rate) || 0);
+    await client.query(
       'UPDATE challans SET challan_number=$1, party_id=$2, date=$3, amount=$4, description=$5 WHERE id=$6',
-      [challan_number, party_id, date, amount, description, req.params.id]
+      [challan_number, party_id, date, amount, description, id]
     );
+    await client.query('DELETE FROM challan_items WHERE challan_id = $1', [id]);
+    for (const it of itemList) {
+      await client.query(
+        'INSERT INTO challan_items (challan_id, description, qty, rate) VALUES ($1, $2, $3, $4)',
+        [id, it.description || null, Number(it.qty) || 1, Number(it.rate) || 0]
+      );
+    }
     res.json({ ok: true });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Database error' });
+  } finally {
+    client.release();
   }
 });
 
@@ -209,6 +236,37 @@ app.get('/api/challans/search-by-party', authMiddleware, async (req, res) => {
       rows = r.rows;
     }
     res.json(rows);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+app.get('/api/challans/:id', authMiddleware, async (req, res) => {
+  try {
+    const { rows: challanRows } = await pool.query(`
+      SELECT c.*, p.name AS party_name, p.contact AS party_contact
+      FROM challans c
+      LEFT JOIN parties p ON p.id = c.party_id
+      WHERE c.id = $1
+    `, [req.params.id]);
+    const challan = challanRows[0];
+    if (!challan) return res.status(404).json({ error: 'Challan not found' });
+    const { rows: itemRows } = await pool.query(
+      'SELECT id, description, qty, rate FROM challan_items WHERE challan_id = $1 ORDER BY id',
+      [req.params.id]
+    );
+    challan.items = itemRows.map(r => ({
+      id: r.id,
+      description: r.description,
+      qty: Number(r.qty),
+      rate: Number(r.rate),
+      total: Number((r.qty * r.rate).toFixed(2))
+    }));
+    if (challan.items.length === 0) {
+      challan.items = [{ description: challan.description || '', qty: 1, rate: challan.amount || 0, total: challan.amount || 0 }];
+    }
+    res.json(challan);
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Database error' });

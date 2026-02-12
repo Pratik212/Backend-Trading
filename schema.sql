@@ -29,6 +29,17 @@ CREATE TABLE IF NOT EXISTS challans (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS challan_items (
+  id SERIAL PRIMARY KEY,
+  challan_id INTEGER NOT NULL REFERENCES challans(id) ON DELETE CASCADE,
+  description TEXT,
+  qty REAL DEFAULT 1,
+  rate REAL DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_challan_items_challan ON challan_items(challan_id);
+
 CREATE TABLE IF NOT EXISTS employees (
   id SERIAL PRIMARY KEY,
   name TEXT NOT NULL,
