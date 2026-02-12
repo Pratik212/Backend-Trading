@@ -103,6 +103,9 @@ app.delete('/api/parties/:id', authMiddleware, async (req, res) => {
     await pool.query('DELETE FROM parties WHERE id = $1', [req.params.id]);
     res.json({ ok: true });
   } catch (e) {
+    if (e.code === '23503') {
+      return res.status(400).json({ error: 'Cannot delete this party because it has challans or payments. Delete them first.' });
+    }
     console.error(e);
     res.status(500).json({ error: 'Database error' });
   }
